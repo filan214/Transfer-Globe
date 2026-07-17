@@ -26,7 +26,7 @@ export default function FilterBar({
   return (
     <>
       {/* Window + mode: below the header on mobile, top right on desktop */}
-      <div className="pointer-events-auto absolute inset-x-4 top-[7rem] z-20 flex flex-wrap gap-2 sm:inset-x-auto sm:right-6 sm:top-6 sm:justify-end">
+      <div className="pointer-events-auto absolute inset-x-4 top-[10.5rem] z-20 flex flex-wrap gap-2 sm:inset-x-auto sm:right-6 sm:top-6 sm:justify-end">
         <div className="seg glass" role="group" aria-label="Transfer window">
           {windows.map((win) => {
             const active =

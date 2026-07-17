@@ -3,7 +3,7 @@
 import createGlobe, { type Globe as CobeGlobe } from "cobe";
 import { useEffect, useRef, useState } from "react";
 import type { ArcDatum, MarkerDatum, Mode } from "../../lib/types";
-import { arcWidth, feeTier } from "../../lib/encoding";
+import { arcWidth, feeTier, formatFee } from "../../lib/encoding";
 import {
   MARKER_COLOR,
   MIGRATION_COLOR,
@@ -19,6 +19,8 @@ interface GlobeProps {
   mode: Mode;
   selectedClubId: string | null;
   onSelectClub: (clubId: string | null) => void;
+  /** Fly the camera to these coordinates whenever nonce changes. */
+  focus: { lat: number; lng: number; nonce: number } | null;
 }
 
 /** COBE renders the sphere at this clip-space radius. */
@@ -143,14 +145,15 @@ export default function Globe({
   mode,
   selectedClubId,
   onSelectClub,
+  focus,
 }: GlobeProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const cobeCanvasRef = useRef<HTMLCanvasElement>(null);
   const overlayRef = useRef<HTMLCanvasElement>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
 
-  const propsRef = useRef({ markers, arcs, mode, selectedClubId, onSelectClub });
-  propsRef.current = { markers, arcs, mode, selectedClubId, onSelectClub };
+  const propsRef = useRef({ markers, arcs, mode, selectedClubId, onSelectClub, focus });
+  propsRef.current = { markers, arcs, mode, selectedClubId, onSelectClub, focus };
 
   const [ready, setReady] = useState(false);
   const [tooltip, setTooltip] = useState<{ title: string; sub: string } | null>(null);
@@ -180,7 +183,12 @@ export default function Globe({
     let lastX = 0;
     let lastY = 0;
     let lastInteraction = 0;
+    let lastFrame = 0;
     let pointer: { x: number; y: number } | null = null;
+    let hoverArcKey: string | null = null;
+    let fly: { phi: number; theta: number } | null = null;
+    let lastFocusNonce = 0;
+    let arcScreens: { arc: ArcDatum; pts: Projected[]; width: number }[] = [];
 
     const destroyGlobe = () => {
       if (!globe) return;
@@ -250,18 +258,70 @@ export default function Globe({
       return best?.m ?? null;
     };
 
+    const distToSegment = (x: number, y: number, p: Projected, q: Projected) => {
+      const dx = q.x - p.x;
+      const dy = q.y - p.y;
+      const len2 = dx * dx + dy * dy;
+      const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, ((x - p.x) * dx + (y - p.y) * dy) / len2));
+      return Math.hypot(x - (p.x + dx * t), y - (p.y + dy * t));
+    };
+
+    const nearestArc = (x: number, y: number) => {
+      let best: { arc: ArcDatum; d: number } | null = null;
+      for (const s of arcScreens) {
+        const threshold = Math.max(s.width + 4, 8);
+        for (let i = 0; i < s.pts.length - 1; i++) {
+          const p = s.pts[i];
+          const q = s.pts[i + 1];
+          if (!p.visible || !q.visible) continue;
+          const d = distToSegment(x, y, p, q);
+          if (d <= threshold && (!best || d < best.d)) best = { arc: s.arc, d };
+        }
+      }
+      return best;
+    };
+
     const draw = (now: number) => {
-      const { markers: ms, arcs: as, mode: md, selectedClubId: sel } = propsRef.current;
+      const { markers: ms, arcs: as, mode: md, selectedClubId: sel, focus: fc } = propsRef.current;
       const ctx = overlay.getContext("2d");
       if (!ctx || !globe) return;
 
+      // Time-based motion so speed is identical at any refresh rate.
+      const dt = lastFrame === 0 ? 16.7 : Math.min(50, now - lastFrame);
+      lastFrame = now;
+      const frames = dt / 16.7;
+
+      if (fc && fc.nonce !== lastFocusNonce) {
+        lastFocusNonce = fc.nonce;
+        const phiTarget = (3 * Math.PI) / 2 - (fc.lng * Math.PI) / 180;
+        // Approach the target the short way around.
+        const twoPi = 2 * Math.PI;
+        const delta = ((((phiTarget - phi) % twoPi) + 3 * Math.PI) % twoPi) - Math.PI;
+        fly = {
+          phi: phi + delta,
+          theta: Math.max(-0.5, Math.min(0.8, ((fc.lat * Math.PI) / 180) * 0.6)),
+        };
+      }
+
       if (dragging) {
         // phi already advanced by pointer handler
+      } else if (fly) {
+        const ease = reducedMotion ? 1 : 1 - Math.pow(0.92, frames);
+        phi += (fly.phi - phi) * ease;
+        theta += (fly.theta - theta) * ease;
+        if (Math.abs(fly.phi - phi) < 0.003 && Math.abs(fly.theta - theta) < 0.003) fly = null;
       } else {
-        phi += velocity;
-        velocity *= 0.94;
-        // Idle auto-rotation; hold still while the user is inspecting a club.
-        if (!reducedMotion && now - lastInteraction > 300 && !hoverRef.current) phi += 0.0016;
+        phi += velocity * frames;
+        velocity *= Math.pow(0.94, frames);
+        // Idle auto-rotation; hold still while the user is inspecting something.
+        if (
+          !reducedMotion &&
+          now - lastInteraction > 300 &&
+          !hoverRef.current &&
+          !hoverArcKey
+        ) {
+          phi += 0.0016 * frames;
+        }
       }
       globe.update({ phi, theta });
 
@@ -271,6 +331,7 @@ export default function Globe({
       ctx.lineJoin = "round";
 
       // --- Arcs ---
+      arcScreens = [];
       for (const arc of as) {
         const from = latLngToVec3(arc.fromClub.lat, arc.fromClub.lng);
         const to = latLngToVec3(arc.toClub.lat, arc.toClub.lng);
@@ -293,15 +354,20 @@ export default function Globe({
         const involvesSelection =
           sel !== null && (arc.fromClub.id === sel || arc.toClub.id === sel);
         const dimmed = sel !== null && !involvesSelection;
+        const hovered = arc.key === hoverArcKey;
         const color =
           md === "money" ? TIER_COLORS[feeTier(arc.value > 0 ? arc.value : null)] : MIGRATION_COLOR;
         const width = arcWidth(md, arc.value);
+        arcScreens.push({ arc, pts, width });
 
-        ctx.strokeStyle = withAlpha(color, dimmed ? 0.07 : reducedMotion ? 0.55 : 0.3);
-        ctx.lineWidth = width;
+        ctx.strokeStyle = withAlpha(
+          color,
+          hovered ? 0.95 : dimmed ? 0.07 : reducedMotion ? 0.55 : 0.3,
+        );
+        ctx.lineWidth = hovered ? width + 0.8 : width;
         strokeRange(ctx, pts, 0, 1);
 
-        if (!reducedMotion && !dimmed) {
+        if (!reducedMotion && !dimmed && !hovered) {
           // Traveling pulse: born at the seller, dies at the buyer.
           const phase = hash01(arc.key);
           const period = 2400 + phase * 1400;
@@ -347,24 +413,29 @@ export default function Globe({
         if (isHovered) hoverPos = p;
       }
 
-      // Pin the tooltip to its marker even while the globe rotates.
+      // Pin the tooltip to its marker even while the globe rotates; arc
+      // tooltips follow the pointer instead.
       const tip = tooltipRef.current;
       if (tip && hoverPos) {
         tip.style.transform = `translate(${Math.round(hoverPos.x)}px, ${Math.round(hoverPos.y)}px)`;
+      } else if (tip && hoverArcKey && pointer) {
+        tip.style.transform = `translate(${Math.round(pointer.x)}px, ${Math.round(pointer.y)}px)`;
       }
 
       raf = requestAnimationFrame(draw);
     };
 
     const clearHover = () => {
-      if (hoverRef.current !== null) {
+      if (hoverRef.current !== null || hoverArcKey !== null) {
         hoverRef.current = null;
+        hoverArcKey = null;
         setTooltip(null);
         container.style.cursor = "grab";
       }
     };
 
     const onPointerDown = (e: PointerEvent) => {
+      fly = null;
       dragging = true;
       dragMoved = 0;
       lastX = e.clientX;
@@ -389,12 +460,13 @@ export default function Globe({
         lastInteraction = performance.now();
         return;
       }
+      const { mode: md } = propsRef.current;
       const hit = hitTest(pointer.x, pointer.y);
-      if ((hit?.club.id ?? null) !== hoverRef.current) {
-        hoverRef.current = hit?.club.id ?? null;
-        container.style.cursor = hit ? "pointer" : "grab";
-        if (hit) {
-          const { mode: md } = propsRef.current;
+      if (hit) {
+        hoverArcKey = null;
+        if (hit.club.id !== hoverRef.current) {
+          hoverRef.current = hit.club.id;
+          container.style.cursor = "pointer";
           const sub =
             hit.activity === 0
               ? "No activity this window"
@@ -402,6 +474,32 @@ export default function Globe({
                 ? `€${Math.round(hit.activity * 10) / 10}m gross activity`
                 : `${hit.activity} transfer${hit.activity === 1 ? "" : "s"}`;
           setTooltip({ title: hit.club.name, sub });
+        }
+        return;
+      }
+      const near = nearestArc(pointer.x, pointer.y);
+      const key = near?.arc.key ?? null;
+      if (hoverRef.current !== null) {
+        hoverRef.current = null;
+        container.style.cursor = "grab";
+        if (!near) setTooltip(null);
+      }
+      if (key !== hoverArcKey) {
+        hoverArcKey = key;
+        if (near) {
+          const a = near.arc;
+          if (md === "money") {
+            const t = a.transfers[0];
+            setTooltip({
+              title: t.playerName,
+              sub: `${a.fromClub.name} → ${a.toClub.name} · ${formatFee(t.fee, t.feeType)}`,
+            });
+          } else {
+            setTooltip({
+              title: `${a.fromClub.name} → ${a.toClub.name}`,
+              sub: `${a.value} player${a.value === 1 ? "" : "s"} this window`,
+            });
+          }
         } else {
           setTooltip(null);
         }

@@ -6,7 +6,9 @@ import {
   buildMarkers,
   filterTransfers,
   listWindows,
+  parseWindowSlug,
   windowLabel,
+  windowSlug,
 } from "./transforms";
 
 const clubs: Club[] = [
@@ -55,6 +57,24 @@ describe("listWindows", () => {
 describe("windowLabel", () => {
   test("formats season and capitalized window", () => {
     expect(windowLabel({ season: "2024/25", window: "winter" })).toBe("2024/25 Winter");
+  });
+});
+
+describe("window slugs", () => {
+  test("round-trips a window through its URL slug", () => {
+    expect(windowSlug({ season: "2024/25", window: "winter" })).toBe("2024-25-winter");
+    expect(parseWindowSlug("2024-25-winter")).toEqual({ season: "2024/25", window: "winter" });
+    expect(parseWindowSlug(windowSlug({ season: "2025/26", window: "summer" }))).toEqual({
+      season: "2025/26",
+      window: "summer",
+    });
+  });
+
+  test("rejects malformed slugs", () => {
+    expect(parseWindowSlug("")).toBeNull();
+    expect(parseWindowSlug("2024-25")).toBeNull();
+    expect(parseWindowSlug("2024-25-preseason")).toBeNull();
+    expect(parseWindowSlug("banana-25-winter")).toBeNull();
   });
 });
 

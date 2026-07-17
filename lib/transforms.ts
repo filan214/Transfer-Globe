@@ -28,6 +28,17 @@ export function windowLabel(win: TransferWindow): string {
   return `${win.season} ${name}`;
 }
 
+/** URL slug for a window: "2024/25" + "winter" → "2024-25-winter". */
+export function windowSlug(win: TransferWindow): string {
+  return `${win.season.replace("/", "-")}-${win.window}`;
+}
+
+export function parseWindowSlug(slug: string): TransferWindow | null {
+  const m = /^(\d{4})-(\d{2})-(summer|winter)$/.exec(slug);
+  if (!m) return null;
+  return { season: `${m[1]}/${m[2]}`, window: m[3] as TransferWindow["window"] };
+}
+
 /** Transfers in the given window where either end plays in a selected league. */
 export function filterTransfers(
   transfers: Transfer[],

@@ -1,7 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Club, League, Mode, Transfer, TransferWindow } from "../../lib/types";
 import { LEAGUES } from "../../lib/types";
 import {
@@ -9,7 +9,9 @@ import {
   buildArcs,
   buildMarkers,
   filterTransfers,
+  parseWindowSlug,
   windowLabel,
+  windowSlug,
   listWindows,
 } from "../../lib/transforms";
 import ClubPanel from "./ClubPanel";
@@ -45,6 +47,42 @@ export default function TransferGlobeApp({ clubs, transfers }: TransferGlobeAppP
   const [mode, setMode] = useState<Mode>("money");
   const [leagues, setLeagues] = useState<League[]>(LEAGUES);
   const [selectedClubId, setSelectedClubId] = useState<string | null>(null);
+  const [focus, setFocus] = useState<{ lat: number; lng: number; nonce: number } | null>(null);
+  const [search, setSearch] = useState("");
+  const urlReady = useRef(false);
+
+  const flyToClub = (club: Club) => {
+    setSelectedClubId(club.id);
+    setFocus((prev) => ({ lat: club.lat, lng: club.lng, nonce: (prev?.nonce ?? 0) + 1 }));
+  };
+
+  // Deep links: read ?window/?mode/?club once after hydration…
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const fromSlug = parseWindowSlug(params.get("window") ?? "");
+    if (fromSlug && windows.some((w) => w.season === fromSlug.season && w.window === fromSlug.window)) {
+      setWin(fromSlug);
+    }
+    if (params.get("mode") === "migration") setMode("migration");
+    const club = clubById.get(params.get("club") ?? "");
+    if (club) flyToClub(club);
+    urlReady.current = true;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // …and keep the URL shareable as the state changes.
+  useEffect(() => {
+    if (!urlReady.current) return;
+    const params = new URLSearchParams();
+    const defaultWin = windows[windows.length - 1];
+    if (win.season !== defaultWin.season || win.window !== defaultWin.window) {
+      params.set("window", windowSlug(win));
+    }
+    if (mode !== "money") params.set("mode", mode);
+    if (selectedClubId) params.set("club", selectedClubId);
+    const query = params.toString();
+    window.history.replaceState(null, "", query ? `?${query}` : window.location.pathname);
+  }, [win, mode, selectedClubId, windows]);
 
   const filtered = useMemo(
     () => filterTransfers(transfers, clubById, win, leagues),
@@ -77,6 +115,7 @@ export default function TransferGlobeApp({ clubs, transfers }: TransferGlobeAppP
         mode={mode}
         selectedClubId={selectedClubId}
         onSelectClub={setSelectedClubId}
+        focus={focus}
       />
 
       {/* Header */}
@@ -91,6 +130,31 @@ export default function TransferGlobeApp({ clubs, transfers }: TransferGlobeAppP
           {windowLabel(win)} · {totalLabel} in fees · {filtered.length}{" "}
           {filtered.length === 1 ? "move" : "moves"}
         </div>
+        <input
+          type="search"
+          list="club-search-list"
+          value={search}
+          placeholder="Find a club…"
+          aria-label="Find a club"
+          className="glass data pointer-events-auto mt-3 w-56 rounded-md px-3 py-2 text-[12px] text-text placeholder:text-faint focus:outline-2 focus:outline-gold"
+          onChange={(e) => {
+            setSearch(e.target.value);
+            const club = clubs.find(
+              (c) => c.name.toLowerCase() === e.target.value.trim().toLowerCase(),
+            );
+            if (club) {
+              flyToClub(club);
+              setSearch("");
+            }
+          }}
+        />
+        <datalist id="club-search-list">
+          {[...clubs]
+            .sort((a, b) => a.name.localeCompare(b.name))
+            .map((c) => (
+              <option key={c.id} value={c.name} />
+            ))}
+        </datalist>
       </header>
 
       <FilterBar
