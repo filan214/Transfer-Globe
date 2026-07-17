@@ -26,6 +26,8 @@ interface GlobeProps {
 /** COBE renders the sphere at this clip-space radius. */
 const R = 0.8;
 const BASE_THETA = 0.18;
+const ZOOM_MIN = 0.6;
+const ZOOM_MAX = 2.75;
 /** Center the initial view on Europe (λ ≈ 10°E): phi = 3π/2 − λ. */
 const INITIAL_PHI = (3 * Math.PI) / 2 - (10 * Math.PI) / 180;
 
@@ -159,6 +161,7 @@ export default function Globe({
   const [tooltip, setTooltip] = useState<{ title: string; sub: string } | null>(null);
 
   const hoverRef = useRef<string | null>(null);
+  const zoomByRef = useRef<(factor: number) => void>(() => {});
 
   useEffect(() => {
     const container = containerRef.current;
@@ -173,6 +176,9 @@ export default function Globe({
     let raf = 0;
     let w = 0;
     let h = 0;
+    let fitScale = 1;
+    let zoom = 1;
+    let zoomTarget = 1;
     let scale = 1;
 
     let phi = INITIAL_PHI;
@@ -189,6 +195,13 @@ export default function Globe({
     let fly: { phi: number; theta: number } | null = null;
     let lastFocusNonce = 0;
     let arcScreens: { arc: ArcDatum; pts: Projected[]; width: number }[] = [];
+    const pointers = new Map<number, { x: number; y: number }>();
+    let pinchStart: { dist: number; zoom: number } | null = null;
+
+    zoomByRef.current = (factor: number) => {
+      zoomTarget = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, zoomTarget * factor));
+      lastInteraction = performance.now();
+    };
 
     const destroyGlobe = () => {
       if (!globe) return;
@@ -208,7 +221,8 @@ export default function Globe({
       w = rect.width;
       h = rect.height;
       // Height sets the globe radius (0.4h); shrink on narrow screens so it fits.
-      scale = Math.min(1, (1.1 * w) / h);
+      fitScale = Math.min(1, (1.1 * w) / h);
+      scale = fitScale * zoom;
       for (const canvas of [cobeCanvas, overlay]) {
         canvas.width = w * dpr;
         canvas.height = h * dpr;
@@ -291,6 +305,13 @@ export default function Globe({
       lastFrame = now;
       const frames = dt / 16.7;
 
+      const zoomEase = reducedMotion ? 1 : 1 - Math.pow(0.8, frames);
+      zoom += (zoomTarget - zoom) * zoomEase;
+      if (Math.abs(zoomTarget - zoom) < 0.001) zoom = zoomTarget;
+      scale = fitScale * zoom;
+      const zoomAttr = zoom.toFixed(3);
+      if (container.dataset.zoom !== zoomAttr) container.dataset.zoom = zoomAttr;
+
       if (fc && fc.nonce !== lastFocusNonce) {
         lastFocusNonce = fc.nonce;
         const phiTarget = (3 * Math.PI) / 2 - (fc.lng * Math.PI) / 180;
@@ -323,7 +344,7 @@ export default function Globe({
           phi += 0.0016 * frames;
         }
       }
-      globe.update({ phi, theta });
+      globe.update({ phi, theta, scale });
 
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, w, h);
@@ -434,27 +455,60 @@ export default function Globe({
       }
     };
 
+    const pinchDist = () => {
+      const [a, b] = [...pointers.values()];
+      return Math.hypot(a.x - b.x, a.y - b.y);
+    };
+
     const onPointerDown = (e: PointerEvent) => {
+      // Don't capture the pointer when the tap is on the zoom buttons —
+      // capturing would retarget pointerup and swallow their click event.
+      if ((e.target as HTMLElement | null)?.closest("[data-zoom-controls]")) return;
       fly = null;
+      lastInteraction = performance.now();
+      try {
+        container.setPointerCapture(e.pointerId);
+      } catch {
+        // Pointer may already be released (or synthetic); capture is best-effort.
+      }
+      pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (pointers.size === 2) {
+        // Second finger down: rotation becomes a pinch zoom.
+        dragging = false;
+        dragMoved = 999;
+        pinchStart = { dist: pinchDist(), zoom: zoomTarget };
+        return;
+      }
       dragging = true;
       dragMoved = 0;
       lastX = e.clientX;
       lastY = e.clientY;
-      lastInteraction = performance.now();
-      container.setPointerCapture(e.pointerId);
       container.style.cursor = "grabbing";
     };
 
     const onPointerMove = (e: PointerEvent) => {
       const rect = container.getBoundingClientRect();
       pointer = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+      if (pointers.has(e.pointerId)) {
+        pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      }
+      if (pinchStart && pointers.size >= 2) {
+        zoomTarget = Math.max(
+          ZOOM_MIN,
+          Math.min(ZOOM_MAX, (pinchStart.zoom * pinchDist()) / pinchStart.dist),
+        );
+        lastInteraction = performance.now();
+        return;
+      }
       if (dragging) {
         const dx = e.clientX - lastX;
         const dy = e.clientY - lastY;
         dragMoved += Math.abs(dx) + Math.abs(dy);
-        phi += dx * 0.005;
-        theta = Math.max(-0.4, Math.min(0.9, theta + dy * 0.003));
-        velocity = dx * 0.005;
+        // Rotate less per pixel when zoomed in, so panning stays controllable.
+        const speed = 0.005 / zoom;
+        phi += dx * speed;
+        theta = Math.max(-0.4, Math.min(0.9, theta + dy * speed * 0.6));
+        velocity = dx * speed;
         lastX = e.clientX;
         lastY = e.clientY;
         lastInteraction = performance.now();
@@ -507,6 +561,17 @@ export default function Globe({
     };
 
     const onPointerUp = (e: PointerEvent) => {
+      pointers.delete(e.pointerId);
+      if (pointers.size < 2) pinchStart = null;
+      if (pointers.size === 1) {
+        // One finger left after a pinch: keep rotating from where it is.
+        const p = [...pointers.values()][0];
+        lastX = p.x;
+        lastY = p.y;
+        dragging = true;
+        dragMoved = 999;
+        return;
+      }
       const wasDragging = dragging;
       dragging = false;
       lastInteraction = performance.now();
@@ -523,10 +588,21 @@ export default function Globe({
       clearHover();
     };
 
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      zoomTarget = Math.max(
+        ZOOM_MIN,
+        Math.min(ZOOM_MAX, zoomTarget * Math.exp(-e.deltaY * 0.0016)),
+      );
+      lastInteraction = performance.now();
+    };
+
     container.addEventListener("pointerdown", onPointerDown);
     container.addEventListener("pointermove", onPointerMove);
     container.addEventListener("pointerup", onPointerUp);
+    container.addEventListener("pointercancel", onPointerUp);
     container.addEventListener("pointerleave", onPointerLeave);
+    container.addEventListener("wheel", onWheel, { passive: false });
 
     setup();
     setReady(true);
@@ -546,7 +622,9 @@ export default function Globe({
       container.removeEventListener("pointerdown", onPointerDown);
       container.removeEventListener("pointermove", onPointerMove);
       container.removeEventListener("pointerup", onPointerUp);
+      container.removeEventListener("pointercancel", onPointerUp);
       container.removeEventListener("pointerleave", onPointerLeave);
+      container.removeEventListener("wheel", onWheel);
       destroyGlobe();
     };
     // The rAF loop reads live props from propsRef; the effect only runs once.
@@ -562,6 +640,25 @@ export default function Globe({
     >
       <canvas ref={cobeCanvasRef} className="block" />
       <canvas ref={overlayRef} className="pointer-events-none absolute inset-0" />
+      <div
+        data-zoom-controls
+        className="absolute bottom-16 right-3 z-20 flex flex-col overflow-hidden rounded-lg sm:bottom-14 sm:right-6"
+      >
+        <button
+          onClick={() => zoomByRef.current(1.35)}
+          aria-label="Zoom in"
+          className="glass data h-9 w-9 text-base leading-none text-dim transition-colors hover:text-text"
+        >
+          +
+        </button>
+        <button
+          onClick={() => zoomByRef.current(1 / 1.35)}
+          aria-label="Zoom out"
+          className="glass data -mt-px h-9 w-9 text-base leading-none text-dim transition-colors hover:text-text"
+        >
+          −
+        </button>
+      </div>
       {tooltip && (
         <div
           ref={tooltipRef}

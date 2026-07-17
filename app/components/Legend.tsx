@@ -53,7 +53,7 @@ export default function Legend({ mode }: { mode: Mode }) {
         <span className="data text-[11px] text-dim">Club, sized by window activity</span>
       </div>
       <div className="data mt-1.5 text-[10px] text-faint">
-        Pulses travel seller → buyer · click a club
+        Pulses travel seller → buyer · click a club · scroll or pinch to zoom
       </div>
     </div>
   );
