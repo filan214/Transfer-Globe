@@ -1,26 +1,176 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --bg: #070b14;
+  --surface: rgba(15, 22, 40, 0.78);
+  --surface-solid: #0f1628;
+  --line: rgba(148, 160, 187, 0.16);
+  --line-strong: rgba(148, 160, 187, 0.32);
+  --text: #edf0f8;
+  --dim: #97a0b5;
+  --faint: #5f6880;
+  --gold: #ffd9a0;
+  --teal: #35c4b5;
+  --hot: #d6335c;
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-bg: var(--bg);
+  --color-text: var(--text);
+  --color-dim: var(--dim);
+  --color-faint: var(--faint);
+  --color-gold: var(--gold);
+  --color-teal: var(--teal);
+  --color-hot: var(--hot);
+  --font-sans: var(--font-ui);
+  --font-mono: var(--font-data);
+  --font-display: var(--font-display);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html,
+body {
+  height: 100%;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui), system-ui, sans-serif;
+  overflow: hidden;
+}
+
+.display {
+  font-family: var(--font-display), sans-serif;
+  text-transform: uppercase;
+}
+
+.data {
+  font-family: var(--font-data), monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Frosted panels floating over the globe */
+.glass {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+/* Filter chips & segmented controls */
+.chip {
+  font-size: 0.75rem;
+  line-height: 1;
+  padding: 0.5rem 0.75rem;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  color: var(--dim);
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    color 120ms ease,
+    border-color 120ms ease,
+    background-color 120ms ease;
+}
+
+.chip:hover {
+  color: var(--text);
+  border-color: var(--dim);
+}
+
+.chip[aria-pressed="true"] {
+  color: var(--bg);
+  background: var(--gold);
+  border-color: var(--gold);
+  font-weight: 600;
+}
+
+.seg {
+  display: flex;
+  border: 1px solid var(--line-strong);
+  border-radius: 0.5rem;
+  overflow: hidden;
+}
+
+.seg button {
+  font-size: 0.75rem;
+  line-height: 1;
+  padding: 0.5rem 0.7rem;
+  color: var(--dim);
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    color 120ms ease,
+    background-color 120ms ease;
+}
+
+.seg button + button {
+  border-left: 1px solid var(--line);
+}
+
+.seg button:hover {
+  color: var(--text);
+}
+
+.seg button[aria-pressed="true"] {
+  color: var(--bg);
+  background: var(--gold);
+  font-weight: 600;
+}
+
+button:focus-visible,
+.chip:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
+}
+
+/* Club panel slide-in */
+@keyframes panel-in {
+  from {
+    opacity: 0;
+    transform: translateX(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.panel-in {
+  animation: panel-in 220ms ease-out both;
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.fade-in {
+  animation: fade-in 600ms ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .panel-in,
+  .fade-in {
+    animation: none;
+  }
+  * {
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Recharts text inherits ink, never series color */
+.recharts-text {
+  fill: var(--dim);
+  font-family: var(--font-data), monospace;
+  font-size: 11px;
+}
+
+::selection {
+  background: var(--hot);
+  color: var(--text);
 }

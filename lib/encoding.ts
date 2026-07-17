@@ -20,8 +20,8 @@ export function arcWidth(mode: Mode, value: number): number {
   return Math.min(4.5, 1 + Math.sqrt(Math.max(0, value - 1)) * 0.9);
 }
 
-export const MARKER_SIZE_MIN = 0.028;
-export const MARKER_SIZE_MAX = 0.105;
+export const MARKER_SIZE_MIN = 0.016;
+export const MARKER_SIZE_MAX = 0.062;
 
 /** COBE marker size from a club's activity relative to the window's max. */
 export function markerSize(activity: number, maxActivity: number): number {
